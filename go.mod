@@ -1,3 +1,3 @@
-module bitbucket.org/creachadair/fileinput
+module github.com/creachadair/fileinput
 
 go 1.12
