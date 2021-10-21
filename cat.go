@@ -1,50 +1,39 @@
+// Package fileinput provides utility functions for handling files named on the
+// command line.
 package fileinput
 
 import (
-	"context"
 	"io"
-	"io/ioutil"
-	"strings"
+	"os"
 )
 
-// Cat returns an io.ReadCloser that delivers the logical concatenation of the
-// specified input files. The files are read sequentially, and any non-nil,
-// non-EOF error from one of the underlying files is returned.  If no files are
-// specified, the resulting reader is empty.
-func Cat(ctx context.Context, paths []string) io.ReadCloser {
-	if len(paths) == 0 {
-		return ioutil.NopCloser(strings.NewReader(""))
-	}
-	return &catReader{ctx: ctx, paths: paths}
+// A CatReader implements io.ReadCloser for the concatenation of a sequence of
+// file paths. The files are opened and closed on-demand as the data are read.
+// The caller must close the reader to release any open filehandle.
+type CatReader struct {
+	cur   io.ReadCloser
+	paths []string
 }
 
-// CatOrFile acts as Cat, but if no paths are specified it returns f.
-func CatOrFile(ctx context.Context, paths []string, f io.ReadCloser) io.ReadCloser {
-	if len(paths) == 0 {
-		return f
-	}
-	return &catReader{ctx: ctx, paths: paths}
-}
+// Cat constructs a CatReader for the specified file paths. If no files are
+// specified, the resulting reader is empty, returning io.EOF for all reads.
+func Cat(paths []string) *CatReader { return &CatReader{paths: fixPaths(paths)} }
 
-type catReader struct {
-	ctx   context.Context
-	cur   io.ReadCloser // the file currently being read, or nil
-	paths []string      // the paths remaining to be read
-}
-
-func (c *catReader) Read(data []byte) (int, error) {
+// Read implements the io.Reader interface. It reports io.EOF when all the
+// files have been completely read and no further data are available.
+func (c *CatReader) Read(data []byte) (int, error) {
 	// If there is no reader active, try to open the next file.
 	// When all files are exhausted, the reader is done.
 	if c.cur == nil {
 		if len(c.paths) == 0 {
 			return 0, io.EOF
 		}
-		rc, err := Open(c.ctx, c.paths[0])
-		c.paths = c.paths[1:]
+		f, err := os.Open(c.paths[len(c.paths)-1])
+		c.paths = c.paths[:len(c.paths)-1]
 		if err != nil {
 			return 0, err
 		}
-		c.cur = rc
+		c.cur = f
 	}
 
 	// Note that it is possible we may read 0 bytes without error.  This is
@@ -60,7 +49,9 @@ func (c *catReader) Read(data []byte) (int, error) {
 	return nr, err
 }
 
-func (c *catReader) Close() error {
+// Close implements the io.Closer interface. After closing c, any further reads
+// will report io.EOF, even if there were unconsumed files prior to close.
+func (c *CatReader) Close() error {
 	var err error
 	if c.cur != nil {
 		err = c.cur.Close()
@@ -68,4 +59,14 @@ func (c *catReader) Close() error {
 	c.cur = nil
 	c.paths = nil
 	return err
+}
+
+func fixPaths(paths []string) []string {
+	cp := make([]string, len(paths))
+	copy(cp, paths)
+	for i, j := 0, len(cp)-1; i < j; i++ {
+		cp[i], cp[j] = cp[j], cp[i]
+		j--
+	}
+	return cp
 }
